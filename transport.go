@@ -32,6 +32,7 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 	// GET /catalogue       List
 	// GET /catalogue/size  Count
 	// GET /catalogue/{id}  Get
+	// GET /catalogue/{id}/stock  Stock
 	// GET /tags            Tags
 	// GET /health		Health Check
 
@@ -64,6 +65,19 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 		decodeGetRequest,
 		encodeGetResponse, // special case, this one can have an error
 		append(options, httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/{id}", logger)))...,
+	))
+	r.Methods("GET").Path("/catalogue/{id}/stock").Handler(httptransport.NewServer(
+		ctx,
+		circuitbreaker.Gobreaker(gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:    "Stock",
+			Timeout: 30 * time.Second,
+		}))(e.StockEndpoint),
+		decodeStockRequest,
+		encodeStockResponse,
+		append(options,
+			httptransport.ServerErrorEncoder(encodeStockError),
+			httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/{id}/stock", logger)),
+		)...,
 	))
 	r.Methods("GET").Path("/tags").Handler(httptransport.NewServer(
 		ctx,
@@ -166,6 +180,36 @@ func encodeGetResponse(ctx context.Context, w http.ResponseWriter, response inte
 		return nil
 	}
 	return encodeResponse(ctx, w, resp.Sock)
+}
+
+func decodeStockRequest(_ context.Context, r *http.Request) (interface{}, error) {
+	return stockRequest{
+		ID: mux.Vars(r)["id"],
+	}, nil
+}
+
+// encodeStockResponse special-cases a non-nil error in the same way as
+// encodeGetResponse.
+func encodeStockResponse(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+	resp := response.(stockResponse)
+	if resp.Err != nil {
+		encodeStockError(ctx, resp.Err, w)
+		return nil
+	}
+	return encodeResponse(ctx, w, resp)
+}
+
+// encodeStockError applies the encodeError status mapping to the stock route.
+// The go-kit server wraps endpoint errors in an httptransport.Error, which
+// encodeError does not unwrap, so it would map ErrNotFound to 500. The unwrap
+// and the Content-Type fix are scoped to this route to leave the error
+// behaviour of the existing routes unchanged.
+func encodeStockError(ctx context.Context, err error, w http.ResponseWriter) {
+	if e, ok := err.(httptransport.Error); ok {
+		err = e.Err
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	encodeError(ctx, err, w)
 }
 
 func decodeTagsRequest(_ context.Context, r *http.Request) (interface{}, error) {

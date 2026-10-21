@@ -16,6 +16,7 @@ type Endpoints struct {
 	ListEndpoint   endpoint.Endpoint
 	CountEndpoint  endpoint.Endpoint
 	GetEndpoint    endpoint.Endpoint
+	StockEndpoint  endpoint.Endpoint
 	TagsEndpoint   endpoint.Endpoint
 	HealthEndpoint endpoint.Endpoint
 }
@@ -27,6 +28,7 @@ func MakeEndpoints(s Service, tracer stdopentracing.Tracer) Endpoints {
 		ListEndpoint:   opentracing.TraceServer(tracer, "GET /catalogue")(MakeListEndpoint(s)),
 		CountEndpoint:  opentracing.TraceServer(tracer, "GET /catalogue/size")(MakeCountEndpoint(s)),
 		GetEndpoint:    opentracing.TraceServer(tracer, "GET /catalogue/{id}")(MakeGetEndpoint(s)),
+		StockEndpoint:  opentracing.TraceServer(tracer, "GET /catalogue/{id}/stock")(MakeStockEndpoint(s)),
 		TagsEndpoint:   opentracing.TraceServer(tracer, "GET /tags")(MakeTagsEndpoint(s)),
 		HealthEndpoint: opentracing.TraceServer(tracer, "GET /health")(MakeHealthEndpoint(s)),
 	}
@@ -56,6 +58,15 @@ func MakeGetEndpoint(s Service) endpoint.Endpoint {
 		req := request.(getRequest)
 		sock, err := s.Get(req.ID)
 		return getResponse{Sock: sock, Err: err}, err
+	}
+}
+
+// MakeStockEndpoint returns an endpoint via the given service.
+func MakeStockEndpoint(s Service) endpoint.Endpoint {
+	return func(ctx context.Context, request interface{}) (response interface{}, err error) {
+		req := request.(stockRequest)
+		stock, err := s.Stock(req.ID)
+		return stockResponse{ID: req.ID, Stock: stock, Err: err}, err
 	}
 }
 
@@ -103,6 +114,16 @@ type getRequest struct {
 type getResponse struct {
 	Sock Sock  `json:"sock"`
 	Err  error `json:"err"`
+}
+
+type stockRequest struct {
+	ID string `json:"id"`
+}
+
+type stockResponse struct {
+	ID    string `json:"id"`
+	Stock int    `json:"stock"`
+	Err   error  `json:"-"`
 }
 
 type tagsRequest struct {

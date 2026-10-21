@@ -57,6 +57,14 @@ class CatalogueContainerTest(unittest.TestCase):
                 self.assertEqual("image/jpeg", r.headers.get("Content-Type"),
                                  msg="Issue with: " + imageUrl + ": " + r.headers.get("Content-Type"))
 
+    def test_catalogue_stock(self):
+        self.wait_or_fail('http://'+ self.ip +':80/catalogue')
+        r = requests.get('http://' + self.ip + '/catalogue/03fef6ac-1896-4ce8-bd69-b798f85c6e0b/stock', timeout=5)
+        self.assertEqual(200, r.status_code)
+        self.assertEqual({"id": "03fef6ac-1896-4ce8-bd69-b798f85c6e0b", "stock": 1}, r.json())
+        r = requests.get('http://' + self.ip + '/catalogue/no-such-sock/stock', timeout=5)
+        self.assertEqual(404, r.status_code)
+
     def test_api_validated(self):
         self.wait_or_fail('http://'+ self.ip +':80/catalogue')
         out = Dredd().test_against_endpoint("catalogue", "http://catalogue/", links=[self.container_name, "{}:mysql".format(self.mysql_container_name)])
