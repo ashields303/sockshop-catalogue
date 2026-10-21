@@ -1,8 +1,10 @@
 package catalogue
 
 import (
+	"errors"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -186,6 +188,51 @@ func TestCatalogueServiceGet(t *testing.T) {
 				continue
 			}
 		}
+	}
+}
+
+func TestCatalogueServiceStock(t *testing.T) {
+	logger = log.NewLogfmtLogger(os.Stderr)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening stub database connection", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	var cols []string = []string{"count"}
+	query := regexp.QuoteMeta(stockQuery)
+
+	// Test Case 1
+	mock.ExpectQuery(query).WithArgs(s3.ID).WillReturnRows(sqlmock.NewRows(cols).AddRow(s3.Count))
+
+	// (Error) Test Case 2
+	mock.ExpectQuery(query).WithArgs("0").WillReturnRows(sqlmock.NewRows(cols))
+
+	// (Error) Test Case 3
+	mock.ExpectQuery(query).WithArgs(s1.ID).WillReturnError(errors.New("connection refused"))
+
+	s := NewCatalogueService(sqlxDB, logger)
+	for _, testcase := range []struct {
+		id      string
+		want    int
+		wantErr error
+	}{
+		{s3.ID, s3.Count, nil},
+		{"0", 0, ErrNotFound},
+		{s1.ID, 0, ErrDBConnection},
+	} {
+		have, err := s.Stock(testcase.id)
+		if err != testcase.wantErr {
+			t.Errorf("Stock(%s): want error %v, have %v", testcase.id, testcase.wantErr, err)
+		}
+		if have != testcase.want {
+			t.Errorf("Stock(%s): want %d, have %d", testcase.id, testcase.want, have)
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Stock: unmet SQL expectations: %s", err)
 	}
 }
 

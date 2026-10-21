@@ -4,6 +4,7 @@ package catalogue
 // catalogue service. Everything here is agnostic to the transport (HTTP).
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type Service interface {
 	List(tags []string, order string, pageNum, pageSize int) ([]Sock, error) // GET /catalogue
 	Count(tags []string) (int, error)                                        // GET /catalogue/size
 	Get(id string) (Sock, error)                                             // GET /catalogue/{id}
+	Stock(id string) (int, error)                                            // GET /catalogue/{id}/stock
 	Tags() ([]string, error)                                                 // GET /tags
 	Health() []Health                                                        // GET /health
 }
@@ -161,6 +163,22 @@ func (s *catalogueService) Get(id string) (Sock, error) {
 	sock.Tags = strings.Split(sock.TagString, ",")
 
 	return sock, nil
+}
+
+var stockQuery = "SELECT sock.count FROM sock WHERE sock.sock_id =?;"
+
+func (s *catalogueService) Stock(id string) (int, error) {
+	var stock int
+	err := s.db.Get(&stock, stockQuery, id)
+	if err == sql.ErrNoRows {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		s.logger.Log("database error", err)
+		return 0, ErrDBConnection
+	}
+
+	return stock, nil
 }
 
 func (s *catalogueService) Health() []Health {

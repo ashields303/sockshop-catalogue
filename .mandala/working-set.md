@@ -40,3 +40,17 @@ Test notes:
 - Record anything that could not be met, with the reason, at the bottom of this file
   under a heading `## Agent notes`.
 - Do not modify this file above that heading.
+
+## Agent notes
+
+Status: all five acceptance criteria met. They pass the unit tests and were checked by hand against a real seeded catalogue-db container (mysql:5.7) under Go 1.7, the CI toolchain.
+
+- **Stock column.** The `sock.count` column already holds units in stock; it is seeded per sock (Holy = 1, Nerd leg = 115). No schema or seed change to catalogue-db was needed. The open question in the ticket is resolved.
+- **Status mapping in `GET /catalogue/{id}` (changed).** The vendored go-kit wraps endpoint errors in `httptransport.Error{Domain: "Do"}` before calling `encodeError`. Its `case ErrNotFound` therefore never matched, and `GET /catalogue/{id}` returned 500 for unknown ids. Because of that, AC2's 404 could not be met by copying the existing mapping. `encodeError` now unwraps the error, so both routes return 404 for unknown ids. Note that `Service.Get` still maps all DB errors to `ErrNotFound`, so `GET /catalogue/{id}` now returns 404 (previously 500) when the DB is down. `Stock` does not have this problem: it returns `ErrNotFound` only for `sql.ErrNoRows` and `ErrDBConnection` for every other error.
+- **Error Content-Type (changed).** `encodeError` set Content-Type after `WriteHeader`, so the header was dropped and error bodies were sent as `text/plain`. The header is now set first, and error responses are `application/json`.
+- **Content-Type on 200.** It is `application/json; charset=utf-8`, the same as every other route.
+- **Test note "error is passed through" (deviation).** In case 3 of `TestCatalogueServiceStock`, a raw query error is mapped to `ErrDBConnection`, following List/Count. The raw error is not passed through, because `encodeError` writes `err.Error()` to the response body and would leak DB details to clients. The test asserts `ErrDBConnection`.
+- **Metrics.** The HTTPLatency path label for the route is `catalogue_id_stock`.
+- **Dredd / container tests.** `/catalogue/{id}/stock` was added to `api-spec/catalogue.json`, so Dredd contract-tests it. `test/container.py` gained `test_catalogue_stock`, which checks 200 with the seeded count and 404 for an unknown id. The container/Dredd suite itself (`make test`) was not run. The same checks were done manually against a real DB container.
+- **Not done here.** The manual Zipkin span check from the test notes was not run. The span name `GET /catalogue/{id}/stock` is set in `endpoints.go` and `transport.go`.
+- **Pre-existing, unchanged.** `go vet` flags an extra `Errorf` argument in `TestCatalogueServiceCount` (service_test.go). Error responses count as circuit-breaker failures, as they do for Get.

@@ -32,6 +32,7 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 	// GET /catalogue       List
 	// GET /catalogue/size  Count
 	// GET /catalogue/{id}  Get
+	// GET /catalogue/{id}/stock  Stock
 	// GET /tags            Tags
 	// GET /health		Health Check
 
@@ -65,6 +66,16 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 		encodeGetResponse, // special case, this one can have an error
 		append(options, httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/{id}", logger)))...,
 	))
+	r.Methods("GET").Path("/catalogue/{id}/stock").Handler(httptransport.NewServer(
+		ctx,
+		circuitbreaker.Gobreaker(gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:    "Stock",
+			Timeout: 30 * time.Second,
+		}))(e.StockEndpoint),
+		decodeStockRequest,
+		encodeStockResponse,
+		append(options, httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/{id}/stock", logger)))...,
+	))
 	r.Methods("GET").Path("/tags").Handler(httptransport.NewServer(
 		ctx,
 		circuitbreaker.Gobreaker(gobreaker.NewCircuitBreaker(gobreaker.Settings{
@@ -94,13 +105,17 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 }
 
 func encodeError(_ context.Context, err error, w http.ResponseWriter) {
+	// The go-kit server wraps errors with the phase they occurred in.
+	if e, ok := err.(httptransport.Error); ok {
+		err = e.Err
+	}
 	code := http.StatusInternalServerError
 	switch err {
 	case ErrNotFound:
 		code = http.StatusNotFound
 	}
-	w.WriteHeader(code)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"error":       err.Error(),
 		"status_code": code,
@@ -166,6 +181,23 @@ func encodeGetResponse(ctx context.Context, w http.ResponseWriter, response inte
 		return nil
 	}
 	return encodeResponse(ctx, w, resp.Sock)
+}
+
+func decodeStockRequest(_ context.Context, r *http.Request) (interface{}, error) {
+	return stockRequest{
+		ID: mux.Vars(r)["id"],
+	}, nil
+}
+
+// encodeStockResponse special-cases a non-nil error in the same way as
+// encodeGetResponse.
+func encodeStockResponse(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+	resp := response.(stockResponse)
+	if resp.Err != nil {
+		encodeError(ctx, resp.Err, w)
+		return nil
+	}
+	return encodeResponse(ctx, w, resp)
 }
 
 func decodeTagsRequest(_ context.Context, r *http.Request) (interface{}, error) {
