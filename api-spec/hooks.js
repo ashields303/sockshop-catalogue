@@ -57,6 +57,17 @@ hooks.beforeEach((transaction, done) => {
             FOREIGN KEY(tag_id)\
             REFERENCES tag(tag_id)\
             );\
+            CREATE TABLE IF NOT EXISTS stock_adjustments (\
+            id INT NOT NULL AUTO_INCREMENT, \
+            sock_id varchar(40) NOT NULL, \
+            delta INT NOT NULL, \
+            reason ENUM('sale', 'return', 'restock', 'correction') NOT NULL, \
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+            PRIMARY KEY(id), \
+            INDEX idx_stock_adjustments_sock_created (sock_id, created_at DESC), \
+            FOREIGN KEY (sock_id) \
+            REFERENCES sock(sock_id)\
+            );\
             INSERT INTO sock VALUES (\"a0a4f044-b040-410d-8ead-4de0446aec7e\", \"Nerd leg\", \"For all those leg lovers out there. A perfect example of a swivel chair trained calf. Meticulously trained on a diet of sitting and Pina Coladas. Phwarr...\", 7.99, 115, \"/catalogue/images/bit_of_leg_1.jpeg\", \"/catalogue/images/bit_of_leg_2.jpeg\");\
             INSERT INTO sock VALUES (\"808a2de1-1aaa-4c25-a9b9-6612e8f29a38\", \"Crossed\", \"A mature sock, crossed, with an air of nonchalance.\",  17.32, 738, \"/catalogue/images/cross_1.jpeg\", \"/catalogue/images/cross_2.jpeg\");\
             INSERT INTO sock VALUES (\"510a0d7e-8e83-4193-b483-e27e09ddc34d\", \"SuperSport XL\", \"Ready for action. Engineers: be ready to smash that next bug! Be ready, with these super-action-sport-masterpieces. This particular engineer was chased away from the office with a stick.\",  15.00, 820, \"/catalogue/images/puma_1.jpeg\", \"/catalogue/images/puma_2.jpeg\");\
@@ -111,7 +122,8 @@ hooks.beforeEach((transaction, done) => {
 });
 
 hooks.afterEach((transaction, done) => {
-    db.query("DROP TABLE sock_tag;\
+    db.query("DROP TABLE stock_adjustments;\
+              DROP TABLE sock_tag;\
               DROP TABLE sock;\
               DROP TABLE tag;", (e, r) => {
 		  if (e) {

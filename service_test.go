@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-kit/kit/log"
 	"github.com/jmoiron/sqlx"
@@ -234,6 +235,234 @@ func TestCatalogueServiceStock(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Stock: unmet SQL expectations: %s", err)
 	}
+}
+
+func newMockService(t *testing.T) (Service, sqlmock.Sqlmock, func()) {
+	logger = log.NewLogfmtLogger(os.Stderr)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening stub database connection", err)
+	}
+	return NewCatalogueService(sqlx.NewDb(db, "sqlmock"), logger), mock, func() { db.Close() }
+}
+
+func TestCatalogueServiceAdjustStock(t *testing.T) {
+	selectQuery := regexp.QuoteMeta(adjustSelectQuery)
+	updateQuery := regexp.QuoteMeta(adjustUpdateQuery)
+	insertQuery := regexp.QuoteMeta(adjustInsertQuery)
+	countRows := func(n ...int) sqlmock.Rows {
+		rows := sqlmock.NewRows([]string{"count"})
+		for _, c := range n {
+			rows.AddRow(c)
+		}
+		return rows
+	}
+
+	for _, testcase := range []struct {
+		name    string
+		id      string
+		delta   int
+		reason  string
+		expect  func(sqlmock.Sqlmock)
+		want    int
+		wantErr error
+	}{
+		{
+			name: "commits the update and the adjustment row", id: "X", delta: -3, reason: "sale",
+			expect: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(selectQuery).WithArgs("X").WillReturnRows(countRows(10))
+				mock.ExpectExec(updateQuery).WithArgs(7, "X").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(insertQuery).WithArgs("X", -3, "sale").WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
+			},
+			want: 7,
+		},
+		{
+			name: "allows stock to reach exactly zero", id: "X", delta: -2, reason: "sale",
+			expect: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(selectQuery).WithArgs("X").WillReturnRows(countRows(2))
+				mock.ExpectExec(updateQuery).WithArgs(0, "X").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(insertQuery).WithArgs("X", -2, "sale").WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
+			},
+			want: 0,
+		},
+		{
+			name: "rolls back without writing when stock would go below zero", id: "X", delta: -5, reason: "sale",
+			expect: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(selectQuery).WithArgs("X").WillReturnRows(countRows(2))
+				mock.ExpectRollback()
+			},
+			wantErr: ErrInsufficientStock,
+		},
+		{
+			name: "rolls back without writing for an unknown id", id: "Y", delta: 1, reason: "restock",
+			expect: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(selectQuery).WithArgs("Y").WillReturnRows(countRows())
+				mock.ExpectRollback()
+			},
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "rolls back when the update fails", id: "X", delta: 1, reason: "return",
+			expect: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(selectQuery).WithArgs("X").WillReturnRows(countRows(1))
+				mock.ExpectExec(updateQuery).WillReturnError(errors.New("connection reset"))
+				mock.ExpectRollback()
+			},
+			wantErr: ErrDBConnection,
+		},
+		{
+			name: "rejects an unknown reason without touching the database", id: "X", delta: 1, reason: "gift",
+			expect:  func(sqlmock.Sqlmock) {},
+			wantErr: ErrInvalidReason,
+		},
+		{
+			name: "rejects a zero delta without touching the database", id: "X", delta: 0, reason: "correction",
+			expect:  func(sqlmock.Sqlmock) {},
+			wantErr: ErrInvalidDelta,
+		},
+	} {
+		s, mock, done := newMockService(t)
+		testcase.expect(mock)
+		have, err := s.AdjustStock(testcase.id, testcase.delta, testcase.reason)
+		if err != testcase.wantErr {
+			t.Errorf("AdjustStock %s: want error %v, have %v", testcase.name, testcase.wantErr, err)
+		}
+		if have != testcase.want {
+			t.Errorf("AdjustStock %s: want %d, have %d", testcase.name, testcase.want, have)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("AdjustStock %s: unmet SQL expectations: %s", testcase.name, err)
+		}
+		done()
+	}
+}
+
+func TestCatalogueServiceStockHistory(t *testing.T) {
+	existsQuery := regexp.QuoteMeta(sockExistsQuery)
+	query := regexp.QuoteMeta(historyQuery)
+	cols := []string{"delta", "reason", "created_at"}
+
+	if !strings.Contains(historyQuery, "WHERE sock_id =? ORDER BY created_at DESC, id DESC LIMIT 50") {
+		t.Errorf("history query must filter by sock and return the newest 50 rows first, have %q", historyQuery)
+	}
+
+	// Three adjustments, newest first.
+	s, mock, done := newMockService(t)
+	mock.ExpectQuery(existsQuery).WithArgs("X").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(query).WithArgs("X").WillReturnRows(sqlmock.NewRows(cols).
+		AddRow(-3, "sale", int64(1792400000)).
+		AddRow(10, "restock", int64(1792300000)).
+		AddRow(1, "return", int64(1792200000)))
+	have, err := s.StockHistory("X")
+	if err != nil {
+		t.Fatalf("StockHistory(X): unexpected error %v", err)
+	}
+	want := []StockAdjustment{
+		{Delta: -3, Reason: "sale", CreatedAt: time.Unix(1792400000, 0).UTC()},
+		{Delta: 10, Reason: "restock", CreatedAt: time.Unix(1792300000, 0).UTC()},
+		{Delta: 1, Reason: "return", CreatedAt: time.Unix(1792200000, 0).UTC()},
+	}
+	if !reflect.DeepEqual(want, have) {
+		t.Errorf("StockHistory(X): want %v, have %v", want, have)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("StockHistory(X): unmet SQL expectations: %s", err)
+	}
+	done()
+
+	// A known sock with no adjustments returns an empty, non-nil slice.
+	s, mock, done = newMockService(t)
+	mock.ExpectQuery(existsQuery).WithArgs("X").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(query).WithArgs("X").WillReturnRows(sqlmock.NewRows(cols))
+	have, err = s.StockHistory("X")
+	if err != nil || have == nil || len(have) != 0 {
+		t.Errorf("StockHistory(X) with no adjustments: want [] and no error, have %#v, %v", have, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("StockHistory(X) with no adjustments: unmet SQL expectations: %s", err)
+	}
+	done()
+
+	// An unknown sock is not found, and its history is not queried.
+	s, mock, done = newMockService(t)
+	mock.ExpectQuery(existsQuery).WithArgs("Y").WillReturnRows(sqlmock.NewRows([]string{"1"}))
+	if _, err = s.StockHistory("Y"); err != ErrNotFound {
+		t.Errorf("StockHistory(Y): want error %v, have %v", ErrNotFound, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("StockHistory(Y): unmet SQL expectations: %s", err)
+	}
+	done()
+
+	// A database failure is reported as such.
+	s, mock, done = newMockService(t)
+	mock.ExpectQuery(existsQuery).WithArgs("X").WillReturnError(errors.New("connection refused"))
+	if _, err = s.StockHistory("X"); err != ErrDBConnection {
+		t.Errorf("StockHistory(X) with database down: want error %v, have %v", ErrDBConnection, err)
+	}
+	done()
+}
+
+func TestCatalogueServiceLowStock(t *testing.T) {
+	query := regexp.QuoteMeta(lowStockQuery)
+	cols := []string{"id", "name", "description", "price", "count", "image_url_1", "image_url_2", "tag_name"}
+
+	if !strings.Contains(lowStockQuery, "WHERE sock.count <= ?") || !strings.Contains(lowStockQuery, "ORDER BY sock.count ASC") {
+		t.Errorf("low-stock query must select count <= threshold ordered by count ascending, have %q", lowStockQuery)
+	}
+
+	// The database applies the threshold and order; the rows are mapped like List.
+	out := s2
+	out.Count = 0
+	at := s5
+	s, mock, done := newMockService(t)
+	mock.ExpectQuery(query).WithArgs(5).WillReturnRows(sqlmock.NewRows(cols).
+		AddRow(out.ID, out.Name, out.Description, out.Price, out.Count, out.ImageURL_1, out.ImageURL_2, out.TagString).
+		AddRow(at.ID, at.Name, at.Description, at.Price, at.Count, at.ImageURL_1, at.ImageURL_2, at.TagString))
+	have, err := s.LowStock(5)
+	if err != nil {
+		t.Fatalf("LowStock(5): unexpected error %v", err)
+	}
+	if want := []Sock{out, at}; !reflect.DeepEqual(want, have) {
+		t.Errorf("LowStock(5): want %v, have %v", want, have)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("LowStock(5): unmet SQL expectations: %s", err)
+	}
+	done()
+
+	// Nothing at or below the threshold returns an empty, non-nil slice.
+	s, mock, done = newMockService(t)
+	mock.ExpectQuery(query).WithArgs(0).WillReturnRows(sqlmock.NewRows(cols))
+	have, err = s.LowStock(0)
+	if err != nil || have == nil || len(have) != 0 {
+		t.Errorf("LowStock(0): want [] and no error, have %#v, %v", have, err)
+	}
+	done()
+
+	// A negative threshold is rejected without a query.
+	s, mock, done = newMockService(t)
+	if _, err = s.LowStock(-1); err != ErrInvalidThreshold {
+		t.Errorf("LowStock(-1): want error %v, have %v", ErrInvalidThreshold, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("LowStock(-1): unmet SQL expectations: %s", err)
+	}
+	done()
+
+	s, mock, done = newMockService(t)
+	mock.ExpectQuery(query).WillReturnError(errors.New("connection refused"))
+	if _, err = s.LowStock(5); err != ErrDBConnection {
+		t.Errorf("LowStock(5) with database down: want error %v, have %v", ErrDBConnection, err)
+	}
+	done()
 }
 
 func TestCatalogueServiceTags(t *testing.T) {

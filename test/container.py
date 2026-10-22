@@ -65,6 +65,35 @@ class CatalogueContainerTest(unittest.TestCase):
         r = requests.get('http://' + self.ip + '/catalogue/no-such-sock/stock', timeout=5)
         self.assertEqual(404, r.status_code)
 
+    def test_catalogue_stock_adjustments(self):
+        self.wait_or_fail('http://'+ self.ip +':80/catalogue')
+        base = 'http://' + self.ip + '/catalogue/'
+        holy = '03fef6ac-1896-4ce8-bd69-b798f85c6e0b'
+        r = requests.patch(base + holy + '/stock', json={"delta": 4, "reason": "restock"}, timeout=5)
+        self.assertEqual(200, r.status_code)
+        self.assertEqual({"id": holy, "count": 5}, r.json())
+        r = requests.patch(base + holy + '/stock', json={"delta": -6, "reason": "sale"}, timeout=5)
+        self.assertEqual(409, r.status_code)
+        r = requests.patch(base + holy + '/stock', json={"delta": 1, "reason": "gift"}, timeout=5)
+        self.assertEqual(400, r.status_code)
+        r = requests.patch(base + 'no-such-sock/stock', json={"delta": 1, "reason": "restock"}, timeout=5)
+        self.assertEqual(404, r.status_code)
+
+        r = requests.get(base + holy + '/stock/history', timeout=5)
+        self.assertEqual(200, r.status_code)
+        history = r.json()
+        self.assertEqual(1, len(history))
+        self.assertEqual(4, history[0]['delta'])
+        self.assertEqual('restock', history[0]['reason'])
+        r = requests.get(base + 'no-such-sock/stock/history', timeout=5)
+        self.assertEqual(404, r.status_code)
+
+        r = requests.get(base + 'low-stock?threshold=5', timeout=5)
+        self.assertEqual(200, r.status_code)
+        self.assertEqual([holy], [sock['id'] for sock in r.json()])
+        r = requests.get(base + 'low-stock', timeout=5)
+        self.assertEqual(400, r.status_code)
+
     def test_api_validated(self):
         self.wait_or_fail('http://'+ self.ip +':80/catalogue')
         out = Dredd().test_against_endpoint("catalogue", "http://catalogue/", links=[self.container_name, "{}:mysql".format(self.mysql_container_name)])

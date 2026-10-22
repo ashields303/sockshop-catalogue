@@ -92,6 +92,130 @@
 			 }
 		     }
 		 }
+	     },
+	     "patch": {
+		 "description": "Adjust the units of an item in stock by a signed delta, and record the adjustment",
+		 "operationId": "Adjust stock",
+		 "consumes": [
+		     "application/json"
+		 ],
+		 "produces": [
+		     "application/json; charset=UTF-8"
+		 ],
+		 "parameters": [
+		     {
+			 "name": "id",
+			 "in": "path",
+			 "required": true,
+			 "type": "string",
+			 "x-example": "a0a4f044-b040-410d-8ead-4de0446aec7e"
+		     },
+		     {
+			 "name": "body",
+			 "in": "body",
+			 "required": true,
+			 "schema": {
+			     "$ref": "#/definitions/Adjuststockrequest"
+			 }
+		     }
+		 ],
+		 "responses": {
+		     "200": {
+			 "description": "",
+			 "schema": {
+			     "$ref": "#/definitions/Adjuststockresponse"
+			 }
+		     },
+		     "400": {
+			 "description": "delta is zero or not an integer, reason is not one of sale, return, restock, correction, or the body is malformed",
+			 "schema": {
+			     "$ref": "#/definitions/Errorresponse"
+			 }
+		     },
+		     "404": {
+			 "description": "No item with this id",
+			 "schema": {
+			     "$ref": "#/definitions/Errorresponse"
+			 }
+		     },
+		     "409": {
+			 "description": "The adjustment would take stock below zero",
+			 "schema": {
+			     "$ref": "#/definitions/Errorresponse"
+			 }
+		     }
+		 }
+	     }
+	 },
+	 	 "/catalogue/{id}/stock/history": {
+	     "get": {
+		 "description": "The 50 most recent stock adjustments of an item, newest first",
+		 "operationId": "Get stock history",
+		 "produces": [
+		     "application/json; charset=UTF-8"
+		 ],
+		 "parameters": [
+		     {
+			 "name": "id",
+			 "in": "path",
+			 "required": true,
+			 "type": "string",
+			 "x-example": "a0a4f044-b040-410d-8ead-4de0446aec7e"
+		     }
+		 ],
+		 "responses": {
+		     "200": {
+			 "description": "",
+			 "schema": {
+			     "type": "array",
+			     "items": {
+				 "$ref": "#/definitions/Stockadjustment"
+			     }
+			 }
+		     },
+		     "404": {
+			 "description": "No item with this id",
+			 "schema": {
+			     "$ref": "#/definitions/Errorresponse"
+			 }
+		     }
+		 }
+	     }
+	 },
+	 "/catalogue/low-stock": {
+	     "get": {
+		 "description": "Items with stock at or below threshold, lowest stock first",
+		 "operationId": "List low stock",
+		 "produces": [
+		     "application/json; charset=UTF-8"
+		 ],
+		 "parameters": [
+		     {
+			 "name": "threshold",
+			 "in": "query",
+			 "required": true,
+			 "type": "integer",
+			 "minimum": 0,
+			 "x-example": 5
+		     }
+		 ],
+		 "responses": {
+		     "200": {
+			 "description": "",
+			 "schema": {
+			     "type": "array",
+			     "items": {
+				 "$ref": "#/definitions/Listresponse"
+			     }
+			 }
+		     },
+		     "400": {
+			 "description": "threshold is missing, negative or not an integer",
+			 "schema": {
+			     "$ref": "#/definitions/Errorresponse"
+			 }
+		     }
+		 }
 	     }
 	 },
 	 "/catalogue/size": {
@@ -235,6 +359,98 @@
 	     "required": [
 		 "id",
 		 "stock"
+	     ]
+	 },
+	 "Adjuststockrequest": {
+	     "title": "Adjust stock request",
+	     "type": "object",
+	     "properties": {
+		 "delta": {
+		     "type": "integer",
+		     "format": "int32"
+		 },
+		 "reason": {
+		     "type": "string",
+		     "enum": [
+			 "sale",
+			 "return",
+			 "restock",
+			 "correction"
+		     ]
+		 }
+	     },
+	     "required": [
+		 "delta",
+		 "reason"
+	     ],
+	     "example": {
+		 "delta": 1,
+		 "reason": "restock"
+	     }
+	 },
+	 "Adjuststockresponse": {
+	     "title": "Adjust stock response",
+	     "type": "object",
+	     "properties": {
+		 "id": {
+		     "type": "string"
+		 },
+		 "count": {
+		     "type": "integer",
+		     "format": "int32"
+		 }
+	     },
+	     "required": [
+		 "id",
+		 "count"
+	     ]
+	 },
+	 "Stockadjustment": {
+	     "title": "Stock adjustment",
+	     "type": "object",
+	     "properties": {
+		 "delta": {
+		     "type": "integer",
+		     "format": "int32"
+		 },
+		 "reason": {
+		     "type": "string",
+		     "enum": [
+			 "sale",
+			 "return",
+			 "restock",
+			 "correction"
+		     ]
+		 },
+		 "timestamp": {
+		     "type": "string",
+		     "format": "date-time"
+		 }
+	     },
+	     "required": [
+		 "delta",
+		 "reason",
+		 "timestamp"
+	     ]
+	 },
+	 "Errorresponse": {
+	     "title": "Error response",
+	     "type": "object",
+	     "properties": {
+		 "error": {
+		     "type": "string"
+		 },
+		 "status_code": {
+		     "type": "integer"
+		 },
+		 "status_text": {
+		     "type": "string"
+		 }
+	     },
+	     "required": [
+		 "error",
+		 "status_code",
+		 "status_text"
 	     ]
 	 },
 	 "Getsizeresponse": {
