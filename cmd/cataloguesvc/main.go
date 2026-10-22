@@ -35,10 +35,15 @@ var (
 		Help:    "Time (in seconds) spent serving HTTP requests.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "path", "status_code", "isWS"})
+	StockAdjustments = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "catalogue_stock_adjustments_total",
+		Help: "Number of committed stock adjustments, by reason.",
+	}, []string{"reason"})
 )
 
 func init() {
 	prometheus.MustRegister(HTTPLatency)
+	prometheus.MustRegister(StockAdjustments)
 }
 
 func main() {
@@ -124,6 +129,7 @@ func main() {
 	{
 		service = catalogue.NewCatalogueService(db, logger)
 		service = catalogue.LoggingMiddleware(logger)(service)
+		service = catalogue.StockAuditMiddleware(logger, StockAdjustments)(service)
 	}
 
 	// Endpoint domain.

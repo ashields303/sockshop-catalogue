@@ -5,6 +5,7 @@ package catalogue
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,10 +32,16 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 
 	// GET /catalogue       List
 	// GET /catalogue/size  Count
+	// GET /catalogue/low-stock?threshold=N  LowStock
 	// GET /catalogue/{id}  Get
 	// GET /catalogue/{id}/stock  Stock
+	// PATCH /catalogue/{id}/stock  AdjustStock
+	// GET /catalogue/{id}/stock/history  StockHistory
 	// GET /tags            Tags
 	// GET /health		Health Check
+	//
+	// Fixed paths under /catalogue (size, low-stock) must be registered before
+	// /catalogue/{id}, or mux matches them as an id.
 
 	r.Methods("GET").Path("/catalogue").Handler(httptransport.NewServer(
 		ctx,
@@ -55,6 +62,19 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 		decodeCountRequest,
 		encodeResponse,
 		append(options, httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/size", logger)))...,
+	))
+	r.Methods("GET").Path("/catalogue/low-stock").Handler(httptransport.NewServer(
+		ctx,
+		circuitbreaker.Gobreaker(gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:    "LowStock",
+			Timeout: 30 * time.Second,
+		}))(e.LowStockEndpoint),
+		decodeLowStockRequest,
+		encodeLowStockResponse,
+		append(options,
+			httptransport.ServerErrorEncoder(encodeStockError),
+			httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/low-stock", logger)),
+		)...,
 	))
 	r.Methods("GET").Path("/catalogue/{id}").Handler(httptransport.NewServer(
 		ctx,
@@ -77,6 +97,32 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 		append(options,
 			httptransport.ServerErrorEncoder(encodeStockError),
 			httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/{id}/stock", logger)),
+		)...,
+	))
+	r.Methods("PATCH").Path("/catalogue/{id}/stock").Handler(httptransport.NewServer(
+		ctx,
+		circuitbreaker.Gobreaker(gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:    "AdjustStock",
+			Timeout: 30 * time.Second,
+		}))(e.AdjustStockEndpoint),
+		decodeAdjustStockRequest,
+		encodeAdjustStockResponse,
+		append(options,
+			httptransport.ServerErrorEncoder(encodeStockError),
+			httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "PATCH /catalogue/{id}/stock", logger)),
+		)...,
+	))
+	r.Methods("GET").Path("/catalogue/{id}/stock/history").Handler(httptransport.NewServer(
+		ctx,
+		circuitbreaker.Gobreaker(gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:    "StockHistory",
+			Timeout: 30 * time.Second,
+		}))(e.StockHistoryEndpoint),
+		decodeStockHistoryRequest,
+		encodeStockHistoryResponse,
+		append(options,
+			httptransport.ServerErrorEncoder(encodeStockError),
+			httptransport.ServerBefore(opentracing.FromHTTPRequest(tracer, "GET /catalogue/{id}/stock/history", logger)),
 		)...,
 	))
 	r.Methods("GET").Path("/tags").Handler(httptransport.NewServer(
@@ -107,11 +153,19 @@ func MakeHTTPHandler(ctx context.Context, e Endpoints, imagePath string, logger 
 	return r
 }
 
+// ErrMalformedBody is returned when a request body is not valid JSON of the
+// expected shape.
+var ErrMalformedBody = errors.New("malformed request body")
+
 func encodeError(_ context.Context, err error, w http.ResponseWriter) {
 	code := http.StatusInternalServerError
 	switch err {
 	case ErrNotFound:
 		code = http.StatusNotFound
+	case ErrInsufficientStock:
+		code = http.StatusConflict
+	case ErrInvalidReason, ErrInvalidDelta, ErrInvalidThreshold, ErrMalformedBody:
+		code = http.StatusBadRequest
 	}
 	w.WriteHeader(code)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -199,10 +253,10 @@ func encodeStockResponse(ctx context.Context, w http.ResponseWriter, response in
 	return encodeResponse(ctx, w, resp)
 }
 
-// encodeStockError applies the encodeError status mapping to the stock route.
-// The go-kit server wraps endpoint errors in an httptransport.Error, which
-// encodeError does not unwrap, so it would map ErrNotFound to 500. The unwrap
-// and the Content-Type fix are scoped to this route to leave the error
+// encodeStockError applies the encodeError status mapping to the stock routes.
+// The go-kit server wraps decode and endpoint errors in an httptransport.Error,
+// which encodeError does not unwrap, so it would map ErrNotFound to 500. The
+// unwrap and the Content-Type fix are scoped to these routes to leave the error
 // behaviour of the existing routes unchanged.
 func encodeStockError(ctx context.Context, err error, w http.ResponseWriter) {
 	if e, ok := err.(httptransport.Error); ok {
@@ -210,6 +264,77 @@ func encodeStockError(ctx context.Context, err error, w http.ResponseWriter) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	encodeError(ctx, err, w)
+}
+
+// decodeAdjustStockRequest validates the JSON body {"delta": int, "reason": string}.
+// A missing or zero delta is invalid. A non-integer delta, or a body that is
+// not a JSON object, fails to decode and is reported as ErrMalformedBody.
+func decodeAdjustStockRequest(_ context.Context, r *http.Request) (interface{}, error) {
+	var body struct {
+		Delta  *int    `json:"delta"`
+		Reason *string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return nil, ErrMalformedBody
+	}
+	if body.Delta == nil || *body.Delta == 0 {
+		return nil, ErrInvalidDelta
+	}
+	if body.Reason == nil || !contains(StockReasons, *body.Reason) {
+		return nil, ErrInvalidReason
+	}
+	return adjustStockRequest{
+		ID:     mux.Vars(r)["id"],
+		Delta:  *body.Delta,
+		Reason: *body.Reason,
+	}, nil
+}
+
+func encodeAdjustStockResponse(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+	resp := response.(adjustStockResponse)
+	if resp.Err != nil {
+		encodeStockError(ctx, resp.Err, w)
+		return nil
+	}
+	return encodeResponse(ctx, w, resp)
+}
+
+func decodeStockHistoryRequest(_ context.Context, r *http.Request) (interface{}, error) {
+	return stockHistoryRequest{
+		ID: mux.Vars(r)["id"],
+	}, nil
+}
+
+// encodeStockHistoryResponse encodes the adjustments as a bare JSON array.
+func encodeStockHistoryResponse(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+	resp := response.(stockHistoryResponse)
+	if resp.Err != nil {
+		encodeStockError(ctx, resp.Err, w)
+		return nil
+	}
+	return encodeResponse(ctx, w, resp.History)
+}
+
+// decodeLowStockRequest requires threshold to be a non-negative integer. Unlike
+// decodeListRequest it does not fall back to a default on a bad value.
+func decodeLowStockRequest(_ context.Context, r *http.Request) (interface{}, error) {
+	threshold, err := strconv.Atoi(r.FormValue("threshold"))
+	if err != nil || threshold < 0 {
+		return nil, ErrInvalidThreshold
+	}
+	return lowStockRequest{
+		Threshold: threshold,
+	}, nil
+}
+
+// encodeLowStockResponse encodes the socks as a bare JSON array, like the list route.
+func encodeLowStockResponse(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+	resp := response.(lowStockResponse)
+	if resp.Err != nil {
+		encodeStockError(ctx, resp.Err, w)
+		return nil
+	}
+	return encodeResponse(ctx, w, resp.Socks)
 }
 
 func decodeTagsRequest(_ context.Context, r *http.Request) (interface{}, error) {

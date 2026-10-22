@@ -7,10 +7,11 @@ CREATE TABLE IF NOT EXISTS sock (
 	name varchar(20), 
 	description varchar(200), 
 	price float, 
-	count int, 
+	count int NOT NULL DEFAULT 0, 
 	image_url_1 varchar(40), 
 	image_url_2 varchar(40), 
-	PRIMARY KEY(sock_id)
+	PRIMARY KEY(sock_id),
+	CHECK (count >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS tag (
@@ -26,6 +27,18 @@ CREATE TABLE IF NOT EXISTS sock_tag (
 		REFERENCES sock(sock_id), 
 	FOREIGN KEY(tag_id)
 		REFERENCES tag(tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_adjustments (
+	id INT NOT NULL AUTO_INCREMENT, 
+	sock_id varchar(40) NOT NULL, 
+	delta INT NOT NULL, 
+	reason ENUM('sale', 'return', 'restock', 'correction') NOT NULL, 
+	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, 
+	PRIMARY KEY(id), 
+	INDEX idx_stock_adjustments_sock_created (sock_id, created_at DESC), 
+	FOREIGN KEY (sock_id) 
+		REFERENCES sock(sock_id)
 );
 
 INSERT INTO sock VALUES ("6d62d909-f957-430e-8689-b5129c0bb75e", "Weave special", "Limited issue Weave socks.", 17.15, 33, "/catalogue/images/weave1.jpg", "/catalogue/images/weave2.jpg");
