@@ -306,3 +306,20 @@ func (s printIDs) String() string {
 	}
 	return "[" + strings.Join(ids, ", ") + "]"
 }
+
+func TestIsLowStock(t *testing.T) {
+	cases := []struct {
+		count int
+		want  bool
+	}{
+		{0, true},
+		{LowStockThreshold, true},
+		{LowStockThreshold + 1, false},
+		{500, false},
+	}
+	for _, c := range cases {
+		if got := isLowStock(c.count); got != c.want {
+			t.Errorf("isLowStock(%d) = %v, want %v", c.count, got, c.want)
+		}
+	}
+}

@@ -37,8 +37,17 @@ type Sock struct {
 	ImageURL_2  string   `json:"-" db:"image_url_2"`
 	Price       float32  `json:"price" db:"price"`
 	Count       int      `json:"count" db:"count"`
+	LowStock    bool     `json:"low_stock" db:"-"`
 	Tags        []string `json:"tag" db:"-"`
 	TagString   string   `json:"-" db:"tag_name"`
+}
+
+// LowStockThreshold is the stock count at or below which a sock is flagged as low stock.
+const LowStockThreshold = 10
+
+// isLowStock reports whether a stock count is at or below LowStockThreshold.
+func isLowStock(count int) bool {
+	return count <= LowStockThreshold
 }
 
 // Health describes the health of a service
@@ -103,6 +112,7 @@ func (s *catalogueService) List(tags []string, order string, pageNum, pageSize i
 	for i, s := range socks {
 		socks[i].ImageURL = []string{s.ImageURL_1, s.ImageURL_2}
 		socks[i].Tags = strings.Split(s.TagString, ",")
+		socks[i].LowStock = isLowStock(s.Count)
 	}
 
 	// DEMO: Change 0 to 850
@@ -161,6 +171,7 @@ func (s *catalogueService) Get(id string) (Sock, error) {
 
 	sock.ImageURL = []string{sock.ImageURL_1, sock.ImageURL_2}
 	sock.Tags = strings.Split(sock.TagString, ",")
+	sock.LowStock = isLowStock(sock.Count)
 
 	return sock, nil
 }
